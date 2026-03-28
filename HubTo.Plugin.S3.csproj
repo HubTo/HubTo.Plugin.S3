@@ -8,7 +8,7 @@
 
 	<ItemGroup>
 		<PackageReference Include="AWSSDK.S3" Version="4.0.19.3" />
-		<PackageReference Include="HubTo.Abstraction" Version="0.1.0" />
+		<PackageReference Include="HubTo.Abstraction" Version="0.1.3" />
 	</ItemGroup>
 
 	<ItemGroup>
