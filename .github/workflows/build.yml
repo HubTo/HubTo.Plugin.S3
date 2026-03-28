@@ -1,0 +1,50 @@
+name: HubTo S3 Plugin Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release-s3:
+    runs-on: ubuntu-latest
+    env:
+      NUGET_AUTH_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Build and Publish
+      run: |
+        VERSION=${GITHUB_REF_NAME#v}
+        dotnet publish HubTo.Plugin.S3.csproj \
+        -c Release \
+        -o ./dist \
+        /p:Version=$VERSION \
+        --no-self-contained
+
+    - name: Create Plugin Package
+      run: |
+        cd dist
+        rm -f HubTo.Abstraction.dll
+        zip ../HubTo-S3-Plugin-${{ github.ref_name }}.zip *.dll
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: HubTo-S3-Plugin-${{ github.ref_name }}.zip
+        name: "S3 Storage Plugin ${{ github.ref_name }}"
+        body: |
+          Version: `${{ github.ref_name }}`
+          
+          **Installation:** Extract the ZIP and copy only the DLL files to your `/plugins` folder.
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
