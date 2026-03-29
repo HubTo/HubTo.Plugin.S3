@@ -2,7 +2,9 @@
 using Amazon.S3.Model;
 using HubTo.Abstraction.Enums;
 using HubTo.Abstraction.Logging;
-using HubTo.Abstraction.Models;
+using HubTo.Abstraction.Models.Common;
+using HubTo.Abstraction.Models.PluginResult;
+using HubTo.Abstraction.Models.Storage;
 using HubTo.Abstraction.Registrars;
 
 namespace HubTo.Plugin.S3;
@@ -50,13 +52,22 @@ public sealed class S3StoragePlugin : IStoragePlugin
         return Task.CompletedTask;
     }
 
-    public async Task<string> SaveAsync(Stream stream, string fileName, StorageMetadata? metadata = null, CancellationToken cancellationToken = default)
+    private PluginResult Guard()
     {
+        if (string.IsNullOrWhiteSpace(_bucketName))
+            return PluginResult.Fail("BucketName is not configured");
+
         if (_client is null)
-        {
-            _logger?.LogWarning("SaveAsync called but S3 client is not initialized.");
-            return string.Empty;
-        }
+            return PluginResult.Fail("S3 client is not initialized");
+
+        return PluginResult.Ok();
+    }
+
+    public async Task<PluginResult<string>> SaveAsync(Stream stream, string fileName, StorageMetadata? metadata = null, CancellationToken cancellationToken = default)
+    {
+        var guard = Guard();
+        if (!guard.IsSuccess)
+            return PluginResult<string>.Fail(guard.Errors);
 
         try
         {
@@ -84,69 +95,86 @@ public sealed class S3StoragePlugin : IStoragePlugin
                 }
             }
 
-            await _client.PutObjectAsync(request, cancellationToken);
-            return safeKey;
+            await _client!.PutObjectAsync(request, cancellationToken);
+
+            return PluginResult<string>.Ok(safeKey);
+        }
+        catch (AmazonS3Exception ex)
+        {
+            _logger?.LogError($"S3 error while uploading: {fileName}", ex);
+            return PluginResult<string>.Fail($"S3 error: {ex.Message}");
         }
         catch (Exception ex)
         {
-            _logger?.LogError($"Failed to upload file: {fileName}", ex);
-            return string.Empty;
+            _logger?.LogError($"Unexpected error while uploading: {fileName}", ex);
+            return PluginResult<string>.Fail($"Upload failed for '{fileName}'");
         }
     }
 
-    public async Task<Stream> GetAsync(string fileId, CancellationToken cancellationToken = default)
+    public async Task<PluginResult<Stream>> GetAsync(string fileId, CancellationToken cancellationToken = default)
     {
-        if (_client is null)
-        {
-            _logger?.LogWarning("GetAsync called but S3 client is not initialized.");
-            return Stream.Null;
-        }
+        var guard = Guard();
+        if (!guard.IsSuccess)
+            return PluginResult<Stream>.Fail(guard.Errors);
 
         try
         {
             _logger?.LogInformation($"Fetching file from S3: {fileId}");
 
-            using (var s3Response = await _client.GetObjectAsync(_bucketName, fileId, cancellationToken))
-            {
-                var ms = new MemoryStream();
-                await s3Response.ResponseStream.CopyToAsync(ms, cancellationToken);
-                ms.Position = 0;
-                return ms;
-            }
+            using var s3Response = await _client!.GetObjectAsync(_bucketName, fileId, cancellationToken);
+
+            var ms = new MemoryStream();
+            await s3Response.ResponseStream.CopyToAsync(ms, cancellationToken);
+            ms.Position = 0;
+
+            return PluginResult<Stream>.Ok(ms);
+        }
+        catch (AmazonS3Exception ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return PluginResult<Stream>.Fail($"File not found: {fileId}");
+        }
+        catch (AmazonS3Exception ex)
+        {
+            _logger?.LogError($"S3 error while fetching: {fileId}", ex);
+            return PluginResult<Stream>.Fail($"S3 error: {ex.Message}");
         }
         catch (Exception ex)
         {
-            _logger?.LogError($"Failed to fetch file: {fileId}", ex);
-            return Stream.Null;
+            _logger?.LogError($"Unexpected error while fetching: {fileId}", ex);
+            return PluginResult<Stream>.Fail($"Fetch failed for '{fileId}'");
         }
     }
 
-    public async Task DeleteAsync(string fileId, CancellationToken cancellationToken = default)
+    public async Task<PluginResult> DeleteAsync(string fileId, CancellationToken cancellationToken = default)
     {
-        if (_client is null)
-        {
-            _logger?.LogWarning("DeleteAsync called but S3 client is not initialized.");
-            return;
-        }
+        var guard = Guard();
+        if (!guard.IsSuccess)
+            return guard;
 
         try
         {
             _logger?.LogInformation($"Deleting file from S3: {fileId}");
-            await _client.DeleteObjectAsync(_bucketName, fileId, cancellationToken);
+            await _client!.DeleteObjectAsync(_bucketName, fileId, cancellationToken);
+
+            return PluginResult.Ok();
+        }
+        catch (AmazonS3Exception ex)
+        {
+            _logger?.LogError($"S3 error while deleting: {fileId}", ex);
+            return PluginResult.Fail($"S3 error: {ex.Message}");
         }
         catch (Exception ex)
         {
-            _logger?.LogError($"Failed to delete file: {fileId}", ex);
+            _logger?.LogError($"Unexpected error while deleting: {fileId}", ex);
+            return PluginResult.Fail($"Delete failed for '{fileId}'");
         }
     }
 
-    public Task<string?> GetDownloadUrlAsync(string fileId, TimeSpan expires, CancellationToken cancellationToken = default)
+    public Task<PluginResult<string>> GetDownloadUrlAsync(string fileId, TimeSpan expires, CancellationToken cancellationToken = default)
     {
-        if (_client is null)
-        {
-            _logger?.LogWarning("GetDownloadUrlAsync called but S3 client is not initialized.");
-            return Task.FromResult<string?>(null);
-        }
+        var guard = Guard();
+        if (!guard.IsSuccess)
+            return Task.FromResult(PluginResult<string>.Fail(guard.Errors));
 
         try
         {
@@ -157,12 +185,19 @@ public sealed class S3StoragePlugin : IStoragePlugin
                 Expires = DateTime.UtcNow.Add(expires)
             };
 
-            return Task.FromResult<string?>(_client.GetPreSignedURL(request));
+            var url = _client!.GetPreSignedURL(request);
+
+            return Task.FromResult(PluginResult<string>.Ok(url));
+        }
+        catch (AmazonS3Exception ex)
+        {
+            _logger?.LogError($"S3 error while generating URL: {fileId}", ex);
+            return Task.FromResult(PluginResult<string>.Fail($"S3 error: {ex.Message}"));
         }
         catch (Exception ex)
         {
-            _logger?.LogError($"Failed to generate presigned URL for: {fileId}", ex);
-            return Task.FromResult<string?>(null);
+            _logger?.LogError($"Unexpected error while generating URL: {fileId}", ex);
+            return Task.FromResult(PluginResult<string>.Fail($"Failed to generate URL for '{fileId}'"));
         }
     }
 
