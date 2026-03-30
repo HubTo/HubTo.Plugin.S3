@@ -71,22 +71,22 @@ public sealed class S3StoragePlugin : IStoragePlugin
 
         try
         {
-            var safeKey = $"{Guid.NewGuid()}/{Path.GetFileName(fileName)}";
-
-            _logger?.LogInformation($"Uploading file to S3. Key: {safeKey}");
+            string safeKey = fileName.Contains('/') ? fileName : $"{Guid.NewGuid()}/{Path.GetFileName(fileName)}";
 
             var request = new PutObjectRequest
             {
                 BucketName = _bucketName,
                 Key = safeKey,
                 InputStream = stream,
-                AutoCloseStream = true
+                AutoCloseStream = false
             };
 
             if (metadata != null)
             {
                 if (!string.IsNullOrEmpty(metadata.ContentType))
                     request.ContentType = metadata.ContentType;
+                else if (fileName.EndsWith(".nupkg", StringComparison.OrdinalIgnoreCase))
+                    request.ContentType = "application/octet-stream";
 
                 if (metadata.Tags != null)
                 {
@@ -97,17 +97,14 @@ public sealed class S3StoragePlugin : IStoragePlugin
 
             await _client!.PutObjectAsync(request, cancellationToken);
 
+            _logger?.LogInformation($"[S3 Storage] Upload successful. Final Key: {safeKey}");
+
             return PluginResult<string>.Ok(safeKey);
         }
         catch (AmazonS3Exception ex)
         {
-            _logger?.LogError($"S3 error while uploading: {fileName}", ex);
+            _logger?.LogError($"[S3 Storage] S3 service error during upload: {fileName}", ex);
             return PluginResult<string>.Fail($"S3 error: {ex.Message}");
-        }
-        catch (Exception ex)
-        {
-            _logger?.LogError($"Unexpected error while uploading: {fileName}", ex);
-            return PluginResult<string>.Fail($"Upload failed for '{fileName}'");
         }
     }
 
